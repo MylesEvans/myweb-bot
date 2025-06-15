@@ -8,7 +8,17 @@ const {
   ButtonStyle,
 } = require("discord.js");
 const fetch = require("node-fetch");
+const express = require("express");
+const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send("MyWeb Bot is alive!");
+});
+
+app.listen(PORT, () => {
+  console.log(`Web server running on port ${PORT}`);
+});
 
 const client = new Client({
   intents: [
