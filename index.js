@@ -2,321 +2,169 @@ require("dotenv").config();
 const {
   Client,
   GatewayIntentBits,
+  Collection,
+  REST,
+  Routes,
+  SlashCommandBuilder,
   EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
 } = require("discord.js");
 const fetch = require("node-fetch");
 const express = require("express");
+const fs = require("fs");
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.get("/", (req, res) => {
-  res.send("MyWeb Bot is alive!");
-});
+// --- Express for port binding
+app.get("/", (_, res) => res.send("Bot is alive!"));
+app.listen(process.env.PORT || 3000, () => console.log("Server running..."));
 
-app.listen(PORT, () => {
-  console.log(`Web server running on port ${PORT}`);
-});
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
-
-const SERP_API_KEY = process.env.SERPAPI_KEY;
-const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
-const LOG_CHANNEL_ID = "1383529361088446526"; // channel to log searches for ban/premium buttons
-
+// --- In-memory storage
 const bannedUsers = new Set();
 const premiumUsers = new Set();
-let lastBannedUserId = null;
+let lastBanned = null;
 
-client.once("ready", async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-
-  // Register slash commands to your guild for instant update (use your GUILD_ID in env)
-  const guildId = process.env.GUILD_ID;
-  if (!guildId) {
-    console.error("GUILD_ID not set in environment!");
-    return;
-  }
-  const guild = await client.guilds.fetch(guildId);
-
-  const commands = [
-    {
-      name: "search",
-      description: "Search for something",
-      options: [
-        {
-          name: "query",
-          description: "What do you want to search for?",
-          type: 3, // STRING
-          required: true,
-        },
-      ],
-    },
-    {
-      name: "summarise",
-      description: "Get a summary of a query (Premium users only)",
-      options: [
-        {
-          name: "query",
-          description: "What do you want summarised?",
-          type: 3,
-          required: true,
-        },
-      ],
-    },
-    {
-      name: "unban",
-      description: "Unban the last banned user",
-    },
-  ];
-
-  await guild.commands.set(commands);
-  console.log("Slash commands registered.");
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isCommand()) return;
+client.commands = new Collection();
 
-  const { commandName, options, user, guild } = interaction;
-
-  if (commandName === "search") {
-    if (bannedUsers.has(user.id)) {
+// --- /search
+client.commands.set("search", {
+  data: new SlashCommandBuilder()
+    .setName("search")
+    .setDescription("Search something on Google")
+    .addStringOption((opt) =>
+      opt.setName("query").setDescription("Search query").setRequired(true),
+    ),
+  async execute(interaction) {
+    const userId = interaction.user.id;
+    if (bannedUsers.has(userId))
       return interaction.reply({
-        content: "You are banned from using this bot.",
+        content: "❌ You are banned from using this command.",
         ephemeral: true,
       });
-    }
 
-    const query = options.getString("query");
+    const query = interaction.options.getString("query");
+    let resultText = "No results found.";
 
-    await interaction.deferReply();
-
-    // Call SerpAPI
-    let searchResult = "No results found.";
     try {
       const res = await fetch(
-        `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${SERP_API_KEY}`,
+        `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${process.env.SERPAPI_KEY}`,
       );
       const data = await res.json();
-
       if (data.error || !data.organic_results) {
-        searchResult = "Monthly Limit Reached or no results.";
+        resultText = "⚠️ Monthly Limit Reached";
       } else {
         const results = data.organic_results.slice(0, 3);
-        searchResult =
-          results
-            .map((r) => `**[${r.title}](${r.link})**\n${r.snippet || ""}`)
-            .join("\n\n") || "No results found.";
+        resultText = results
+          .map((r) => `**[${r.title}](${r.link})**\n${r.snippet || ""}`)
+          .join("\n\n");
       }
-    } catch (err) {
-      searchResult = "Search failed.";
+    } catch {
+      resultText = "⚠️ Monthly Limit Reached";
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`Search results for: "${query}"`)
-      .setDescription(searchResult)
+      .setTitle("🔍 Search Results")
       .setColor("Blue")
+      .setDescription(resultText || "No results.")
       .setFooter({ text: "Powered by SerpAPI" });
 
-    await interaction.editReply({ embeds: [embed] });
+    interaction.reply({ embeds: [embed] });
 
-    // Send log message with Ban / Premium buttons
-    try {
-      const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
-      if (logChannel.isTextBased()) {
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`ban_${user.id}`)
-            .setLabel("Ban User")
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId(`premium_${user.id}`)
-            .setLabel("Give Premium")
-            .setStyle(ButtonStyle.Success),
-        );
+    // Logging for moderation
+    const logChannel = await client.channels.fetch("1383529361088446526");
+    logChannel.send({
+      content: `🔎 **${interaction.user.tag}** searched: \`${query}\``,
+    });
+  },
+});
 
-        await logChannel.send({
-          content: `User **${user.tag}** searched: \`${query}\``,
-          components: [row],
-        });
-      }
-    } catch (err) {
-      console.error("Error sending log message:", err);
-    }
-  } else if (commandName === "summarise") {
-    if (bannedUsers.has(user.id)) {
+// --- /summarise
+client.commands.set("summarise", {
+  data: new SlashCommandBuilder()
+    .setName("summarise")
+    .setDescription("Summarise a topic (Premium only)")
+    .addStringOption((opt) =>
+      opt
+        .setName("query")
+        .setDescription("Topic to summarise")
+        .setRequired(true),
+    ),
+  async execute(interaction) {
+    const userId = interaction.user.id;
+    if (!premiumUsers.has(userId)) {
       return interaction.reply({
-        content: "You are banned from using this bot.",
-        ephemeral: true,
-      });
-    }
-    if (!premiumUsers.has(user.id)) {
-      return interaction.reply({
-        content: "You must be a Premium user to use this command.",
+        content: "⚠️ You need MyWeb Premium to use this command.",
         ephemeral: true,
       });
     }
 
-    const query = options.getString("query");
+    const query = interaction.options.getString("query");
+    let summary = "No summary available.";
 
-    await interaction.deferReply();
-
-    // Call Hugging Face summarisation
-    let summary = "Summary not available.";
     try {
-      const res = await fetch(
+      const hf = await fetch(
         "https://api-inference.huggingface.co/models/facebook/bart-large-cnn",
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${HUGGINGFACE_API_KEY}`,
+            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            inputs: query,
-          }),
+          body: JSON.stringify({ inputs: `Summarise: ${query}` }),
         },
       );
-      const data = await res.json();
-      if (Array.isArray(data) && data[0]?.summary_text) {
-        summary = data[0].summary_text;
-      } else if (data.summary_text) {
-        summary = data.summary_text;
+      const hfData = await hf.json();
+      if (Array.isArray(hfData) && hfData[0]?.generated_text) {
+        summary = hfData[0].generated_text;
+      } else {
+        summary = hfData.generated_text || summary;
       }
-    } catch (err) {
-      summary = "Failed to get summary.";
+    } catch {
+      summary = "⚠️ Failed to fetch summary.";
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`Summary for: "${query}"`)
-      .setDescription(summary)
-      .setColor("Purple")
-      .setFooter({ text: "Powered by Hugging Face" });
+      .setTitle("🧠 Summary")
+      .setColor("Green")
+      .setDescription(summary);
 
-    await interaction.editReply({ embeds: [embed] });
+    interaction.reply({ embeds: [embed] });
+  },
+});
 
-    // Send log message with Ban / Premium buttons
-    try {
-      const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
-      if (logChannel.isTextBased()) {
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`ban_${user.id}`)
-            .setLabel("Ban User")
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId(`premium_${user.id}`)
-            .setLabel("Give Premium")
-            .setStyle(ButtonStyle.Success),
-        );
+// --- /unban
+client.commands.set("unban", {
+  data: new SlashCommandBuilder()
+    .setName("unban")
+    .setDescription("Unbans the last banned user"),
+  async execute(interaction) {
+    if (lastBanned) {
+      bannedUsers.delete(lastBanned);
+      interaction.reply(`✅ Unbanned <@${lastBanned}>.`);
+      lastBanned = null;
+    } else {
+      interaction.reply("❌ No one to unban.");
+    }
+  },
+});
 
-        await logChannel.send({
-          content: `User **${user.tag}** used summarise: \`${query}\``,
-          components: [row],
-        });
-      }
-    } catch (err) {
-      console.error("Error sending log message:", err);
-    }
-  } else if (commandName === "unban") {
-    if (!guild.members.cache.get(user.id).permissions.has("BanMembers")) {
-      return interaction.reply({
-        content: "You do not have permission to use this command.",
-        ephemeral: true,
-      });
-    }
-    if (!lastBannedUserId) {
-      return interaction.reply({
-        content: "No user to unban.",
-        ephemeral: true,
-      });
-    }
-
-    try {
-      await guild.members.unban(lastBannedUserId);
-      bannedUsers.delete(lastBannedUserId);
-      await interaction.reply({
-        content: `Unbanned user with ID ${lastBannedUserId}.`,
-        ephemeral: true,
-      });
-      lastBannedUserId = null;
-    } catch (err) {
-      await interaction.reply({
-        content:
-          "Failed to unban user. They might not be banned or I lack permissions.",
-        ephemeral: true,
-      });
-    }
+// --- Handle slash commands
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  const command = client.commands.get(interaction.commandName);
+  if (!command) return;
+  try {
+    await command.execute(interaction);
+  } catch (e) {
+    console.error(e);
+    interaction.reply({ content: "❌ Command error.", ephemeral: true });
   }
 });
 
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-
-  const [action, targetUserId] = interaction.customId.split("_");
-  const member = await interaction.guild.members
-    .fetch(targetUserId)
-    .catch(() => null);
-
-  if (
-    interaction.user.id !== interaction.message.mentions?.users?.first()?.id &&
-    !interaction.member.permissions.has("Administrator")
-  ) {
-    // Only allow admins to click buttons
-    await interaction.reply({
-      content: "You do not have permission to press this button.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (!member) {
-    await interaction.reply({
-      content: "User not found in this server.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (action === "ban") {
-    try {
-      await interaction.guild.members.ban(targetUserId, {
-        reason: "Banned via MyWeb Bot",
-      });
-      bannedUsers.add(targetUserId);
-      lastBannedUserId = targetUserId;
-      await interaction.reply({
-        content: `Banned user ${member.user.tag}.`,
-        ephemeral: true,
-      });
-    } catch (err) {
-      await interaction.reply({
-        content: "Failed to ban user.",
-        ephemeral: true,
-      });
-    }
-  } else if (action === "premium") {
-    premiumUsers.add(targetUserId);
-    try {
-      await member.send(
-        "Welcome to MyWeb Premium! You now have access to premium commands like `/summarise`.",
-      );
-    } catch {
-      // User may have DMs closed
-    }
-    await interaction.reply({
-      content: `Granted premium to ${member.user.tag}.`,
-      ephemeral: true,
-    });
-  }
+client.once("ready", () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
