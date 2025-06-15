@@ -1,18 +1,22 @@
+// deploy.js
 require("dotenv").config();
 const { REST, Routes, SlashCommandBuilder } = require("discord.js");
 
 const commands = [
   new SlashCommandBuilder()
     .setName("search")
-    .setDescription("Searches the web for a query.")
-    .addStringOption((option) =>
-      option.setName("query").setDescription("Search query").setRequired(true),
+    .setDescription("Search the web for a query (DuckDuckGo).")
+    .addStringOption((opt) =>
+      opt
+        .setName("query")
+        .setDescription("Your search query")
+        .setRequired(true),
     ),
   new SlashCommandBuilder()
     .setName("summarise")
     .setDescription("Summarises a topic (Premium only).")
-    .addStringOption((option) =>
-      option
+    .addStringOption((opt) =>
+      opt
         .setName("query")
         .setDescription("Text to summarise")
         .setRequired(true),
@@ -26,18 +30,18 @@ const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 (async () => {
   try {
-    console.log("🚀 Clearing all global commands...");
+    console.log("🗑 Clearing all global commands...");
     await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), {
       body: [],
     });
     console.log("✅ Cleared global commands.");
 
-    console.log("🚀 Deploying commands globally...");
+    console.log("🚀 Deploying new global slash commands...");
     await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), {
       body: commands,
     });
-    console.log("✅ Successfully deployed global commands!");
-  } catch (error) {
-    console.error("❌ Error deploying commands:", error);
+    console.log("✅ Successfully deployed global slash commands!");
+  } catch (err) {
+    console.error("❌ Error deploying commands:", err);
   }
 })();
