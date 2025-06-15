@@ -20,7 +20,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("unban")
     .setDescription("Unbans the last banned user."),
-].map((command) => command.toJSON());
+].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
@@ -36,7 +36,6 @@ const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), {
       body: commands,
     });
-
     console.log("✅ Successfully deployed global commands!");
   } catch (error) {
     console.error("❌ Error deploying commands:", error);
