@@ -1,135 +1,143 @@
 require("dotenv").config();
-const express = require("express");
 const {
   Client,
   GatewayIntentBits,
+  Partials,
+  MessageActionRow,
+  MessageButton,
   EmbedBuilder,
-  ButtonBuilder,
-  ActionRowBuilder,
-  ButtonStyle,
-  Events,
 } = require("discord.js");
 const fetch = require("node-fetch");
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Web server for Uptime Robot
-app.get("/", (req, res) => {
-  res.send("MyWeb Discord bot is running!");
-});
-app.listen(PORT, () => console.log(`Uptime server running on port ${PORT}`));
-
-// Discord bot setup
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Message, Partials.Channel],
 });
 
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const SERP_API_KEY = process.env.SERPAPI_KEY;
-const LOG_CHANNEL_ID = "1383529361088446526";
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 
 const bannedUsers = new Set();
-let lastBannedUser = null;
+const premiumUsers = new Set();
+let lastBannedUserId = null;
 
-client.once(Events.ClientReady, () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+client.once("ready", () => {
+  console.log(`Logged in as ${client.user.tag}`);
 });
 
-client.on(Events.MessageCreate, async (message) => {
+client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const content = message.content.trim();
 
-  // !search command
-  if (content.startsWith("!search")) {
-    if (bannedUsers.has(message.author.id)) {
-      return message.reply("❌ You are banned from using the search command.");
+  // Check if banned
+  if (bannedUsers.has(message.author.id)) {
+    if (content.startsWith("!search") || content.startsWith("!summarise")) {
+      return message.reply("You are banned from using search commands.");
     }
+  }
 
+  if (content.startsWith("!search")) {
     const query = content.slice("!search".length).trim();
     if (!query) return message.reply("Please provide a search query.");
 
-    let resultText = "No results found. Attempting to summarise...";
+    // Log search
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+    if (logChannel) {
+      const embed = new EmbedBuilder()
+        .setTitle("New Search")
+        .setDescription(`**User:** ${message.author.tag}\n**Query:** ${query}`)
+        .setColor("Blue")
+        .setTimestamp();
 
+      const row = new MessageActionRow().addComponents(
+        new MessageButton()
+          .setCustomId(`ban_${message.author.id}`)
+          .setLabel("Ban User (1 day)")
+          .setStyle("DANGER"),
+        new MessageButton()
+          .setCustomId(`premium_${message.author.id}`)
+          .setLabel("Give Premium")
+          .setStyle("SUCCESS"),
+      );
+
+      await logChannel.send({ embeds: [embed], components: [row] });
+    }
+
+    // Fetch SerpAPI results
     try {
       const res = await fetch(
         `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${SERP_API_KEY}`,
       );
       const data = await res.json();
 
-      if (data.error || !data.organic_results) {
-        throw new Error("Search failed");
-      }
+      if (data.error)
+        return message.reply("Monthly Limit Reached or error with SerpAPI.");
 
-      const results = data.organic_results.slice(0, 3);
-      resultText =
-        results
-          .map((r) => `**[${r.title}](${r.link})**\n${r.snippet || ""}`)
-          .join("\n\n") || resultText;
-    } catch (err) {
-      console.warn("Search failed. Using summary fallback.");
+      const results = data.organic_results?.slice(0, 3);
+      if (!results || results.length === 0)
+        return message.reply("No results found.");
 
-      // Basic placeholder summary fallback
-      resultText = `🧠 Summary of **${query}**:\nThis is a general explanation about "${query}" based on common knowledge and current information.`;
-    }
+      let replyText = results
+        .map((r) => `**[${r.title}](${r.link})**\n${r.snippet || ""}`)
+        .join("\n\n");
 
-    const embed = new EmbedBuilder()
-      .setTitle("🔍 MylesWeb Result")
-      .setColor("Green")
-      .addFields({ name: "Results", value: resultText })
-      .setFooter({ text: `Query by ${message.author.tag}` });
-
-    await message.reply({ embeds: [embed] });
-
-    // Log the query
-    const logChannel = await client.channels
-      .fetch(LOG_CHANNEL_ID)
-      .catch(() => null);
-    if (logChannel) {
-      const banButton = new ButtonBuilder()
-        .setCustomId(`ban_${message.author.id}`)
-        .setLabel("Ban")
-        .setStyle(ButtonStyle.Danger);
-
-      const row = new ActionRowBuilder().addComponents(banButton);
-
-      await logChannel.send({
-        content: `🔎 **Search Query Logged**\n👤 User: ${message.author.tag} (${message.author.id})\n📄 Query: \`${query}\``,
-        components: [row],
-      });
+      return message.reply(replyText);
+    } catch {
+      return message.reply("Failed to fetch search results.");
     }
   }
 
-  // !unban command
+  if (content.startsWith("!summarise")) {
+    if (!premiumUsers.has(message.author.id)) {
+      return message.reply("This command is for premium users only.");
+    }
+
+    const query = content.slice("!summarise".length).trim();
+    if (!query) return message.reply("Please provide a query to summarise.");
+
+    // You can add a summarisation API call here
+    // Placeholder:
+    return message.reply(`Summary feature coming soon for: ${query}`);
+  }
+
   if (content === "!unban") {
-    if (!lastBannedUser) return message.reply("⚠️ No one is currently banned.");
-
-    bannedUsers.delete(lastBannedUser);
-    const unbannedUser = lastBannedUser;
-    lastBannedUser = null;
-
-    return message.reply(`✅ <@${unbannedUser}> has been unbanned.`);
+    if (!lastBannedUserId) return message.reply("No user to unban.");
+    bannedUsers.delete(lastBannedUserId);
+    message.reply(`Unbanned user <@${lastBannedUserId}> from search commands.`);
+    lastBannedUserId = null;
   }
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
+client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
   const [action, userId] = interaction.customId.split("_");
+
   if (action === "ban") {
     bannedUsers.add(userId);
-    lastBannedUser = userId;
-
+    lastBannedUserId = userId;
     await interaction.reply({
-      content: `🚫 User <@${userId}> has been **banned** from using search.`,
+      content: `User <@${userId}> banned from search commands for 1 day.`,
+      ephemeral: true,
+    });
+  } else if (action === "premium") {
+    premiumUsers.add(userId);
+    try {
+      const user = await client.users.fetch(userId);
+      await user.send(
+        "Welcome To MyWeb Premium! You now have access to exclusive commands.",
+      );
+    } catch {}
+    await interaction.reply({
+      content: `User <@${userId}> given premium access.`,
       ephemeral: true,
     });
   }
 });
 
-client.login(DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN);
