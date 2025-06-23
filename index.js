@@ -1,130 +1,211 @@
 require("dotenv").config();
+const express = require("express");
 const {
   Client,
   GatewayIntentBits,
   Partials,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   EmbedBuilder,
+  Collection,
+  Events,
 } = require("discord.js");
-const { request } = require("undici");
-const express = require("express");
-const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Serve the Apple-style frontend
-app.use(express.static("public"));
-
-// Route '/' to index.html
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/index.html"));
+app.get("/", (_, res) => {
+  res.send("MyWeb Bot is running!");
+});
+app.listen(PORT, () => {
+  console.log(`✅ Web server listening on port ${PORT}`);
 });
 
-// DuckDuckGo search endpoint
-app.get("/search", async (req, res) => {
-  const query = req.query.q;
-  if (!query) return res.status(400).json({ error: "Missing query" });
-
-  try {
-    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
-    const response = await request(url);
-    const data = await response.body.json();
-
-    const results = [];
-
-    if (data.AbstractText) {
-      results.push({
-        title: data.Heading || "Definition",
-        link: data.AbstractURL || "#",
-        snippet: data.AbstractText,
-      });
-    }
-
-    if (Array.isArray(data.RelatedTopics)) {
-      data.RelatedTopics.slice(0, 5).forEach((item) => {
-        if (item.Text && item.FirstURL) {
-          results.push({
-            title: item.Text.split(" - ")[0],
-            link: item.FirstURL,
-            snippet: item.Text,
-          });
-        }
-      });
-    }
-
-    res.json({ results });
-  } catch (err) {
-    console.error("DuckDuckGo error:", err);
-    res.status(500).json({ error: "DuckDuckGo failed" });
-  }
-});
-
-app.listen(PORT, () => console.log(`🌐 Web running on port ${PORT}`));
-
-/* -------- DISCORD BOT -------- */
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel],
 });
 
-client.once("ready", () => {
+client.commands = new Collection();
+
+client.once(Events.ClientReady, () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
 });
 
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  if (!message.content.startsWith("!search")) return;
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  const query = message.content.slice("!search".length).trim();
-  if (!query) return message.reply("Please provide a search query.");
+  const { commandName } = interaction;
 
-  try {
-    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
-    const response = await request(url);
-    const data = await response.body.json();
+  if (commandName === "search") {
+    await interaction.reply("Search is currently under maintenance.");
+  }
 
-    const results = [];
-
-    if (data.AbstractText) {
-      results.push({
-        title: data.Heading || "Definition",
-        link: data.AbstractURL || "#",
-        snippet: data.AbstractText,
-      });
-    }
-
-    if (Array.isArray(data.RelatedTopics)) {
-      data.RelatedTopics.slice(0, 5).forEach((item) => {
-        if (item.Text && item.FirstURL) {
-          results.push({
-            title: item.Text.split(" - ")[0],
-            link: item.FirstURL,
-            snippet: item.Text,
-          });
-        }
-      });
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle("🔍 MyWeb Search")
-      .setColor("Blue")
-      .addFields(
-        results.map((r) => ({
-          name: r.title,
-          value: `[Visit](${r.link})\n${r.snippet}`,
-        })),
-      )
-      .setFooter({ text: "DuckDuckGo Powered" });
-
-    message.reply({ embeds: [embed] });
-  } catch (err) {
-    console.error("Search failed:", err);
-    message.reply("Error while searching.");
+  if (commandName === "snake") {
+    const game = new SnakeGame(interaction);
+    game.start();
   }
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
+// Inline Snake Game Class
+class SnakeGame {
+  constructor(interaction) {
+    this.interaction = interaction;
+    this.boardSize = 5;
+    this.snake = [[2, 2]];
+    this.apple = this.spawnApple();
+    this.direction = "right";
+    this.interval = null;
+    this.alive = true;
+  }
+
+  start() {
+    this.sendGameMessage();
+    this.interval = setInterval(() => {
+      this.moveSnake();
+    }, 1000); // 1 FPS
+  }
+
+  async sendGameMessage() {
+    const board = this.renderBoard();
+    const buttons = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("up")
+        .setLabel("⬆️")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("down")
+        .setLabel("⬇️")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("left")
+        .setLabel("⬅️")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("right")
+        .setLabel("➡️")
+        .setStyle(ButtonStyle.Primary),
+    );
+
+    const embed = new EmbedBuilder()
+      .setTitle("🐍 Snake Game")
+      .setDescription("```\n" + board + "\n```")
+      .setColor("Green");
+
+    this.message = await this.interaction.reply({
+      embeds: [embed],
+      components: [buttons],
+      fetchReply: true,
+    });
+
+    const collector = this.message.createMessageComponentCollector({
+      time: 600_000,
+    });
+
+    collector.on("collect", (i) => {
+      if (i.user.id !== this.interaction.user.id) {
+        return i.reply({ content: "This isn't your game!", ephemeral: true });
+      }
+
+      const choice = i.customId;
+      if (["up", "down", "left", "right"].includes(choice)) {
+        this.direction = choice;
+        i.deferUpdate();
+      }
+    });
+
+    collector.on("end", () => {
+      if (this.alive) {
+        this.stop("⏹️ Game ended due to inactivity.");
+      }
+    });
+  }
+
+  renderBoard() {
+    let board = Array.from({ length: this.boardSize }, () =>
+      Array(this.boardSize).fill("⬛"),
+    );
+    this.snake.forEach(([x, y]) => {
+      board[y][x] = "🟩";
+    });
+    const [ax, ay] = this.apple;
+    board[ay][ax] = "🍎";
+    return board.map((row) => row.join("")).join("\n");
+  }
+
+  spawnApple() {
+    let x, y;
+    do {
+      x = Math.floor(Math.random() * this.boardSize);
+      y = Math.floor(Math.random() * this.boardSize);
+    } while (this.snake.some(([sx, sy]) => sx === x && sy === y));
+    return [x, y];
+  }
+
+  moveSnake() {
+    if (!this.alive) return;
+
+    const head = [...this.snake[0]];
+    switch (this.direction) {
+      case "up":
+        head[1]--;
+        break;
+      case "down":
+        head[1]++;
+        break;
+      case "left":
+        head[0]--;
+        break;
+      case "right":
+        head[0]++;
+        break;
+    }
+
+    if (
+      head[0] < 0 ||
+      head[0] >= this.boardSize ||
+      head[1] < 0 ||
+      head[1] >= this.boardSize ||
+      this.snake.some(([x, y]) => x === head[0] && y === head[1])
+    ) {
+      return this.stop("💀 You lost!");
+    }
+
+    this.snake.unshift(head);
+
+    if (head[0] === this.apple[0] && head[1] === this.apple[1]) {
+      this.apple = this.spawnApple();
+    } else {
+      this.snake.pop();
+    }
+
+    this.updateBoard();
+  }
+
+  async updateBoard() {
+    const embed = new EmbedBuilder()
+      .setTitle("🐍 Snake Game")
+      .setDescription("```\n" + this.renderBoard() + "\n```")
+      .setColor("Green");
+
+    await this.message.edit({
+      embeds: [embed],
+      components: this.message.components,
+    });
+  }
+
+  stop(reason) {
+    this.alive = false;
+    clearInterval(this.interval);
+
+    const embed = new EmbedBuilder()
+      .setTitle("🐍 Snake Game Over")
+      .setDescription(reason)
+      .setColor("Red");
+
+    this.message.edit({ embeds: [embed], components: [] });
+  }
+}
