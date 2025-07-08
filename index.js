@@ -1,5 +1,4 @@
 require("dotenv").config();
-import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const express = require("express");
 const {
   Client,
@@ -11,24 +10,21 @@ const {
   EmbedBuilder,
   Collection,
   Events,
-  REST,
-  Routes,
-  SlashCommandBuilder,
 } = require("discord.js");
-const fetch = require("node-fetch");
+
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get("/", (_, res) => {
-  res.send("MyWeb Bot is running!");
-});
+app.get("/", (_, res) => res.send("MyWeb Bot is running!"));
 app.listen(PORT, () => {
   console.log(`✅ Web server listening on port ${PORT}`);
 });
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel],
 });
 
@@ -41,39 +37,51 @@ client.once(Events.ClientReady, () => {
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const { commandName, options } = interaction;
+  const { commandName } = interaction;
 
+  // Slash command: /search
   if (commandName === "search") {
-    const query = options.getString("query");
+    const query = interaction.options.getString("query");
+
     await interaction.deferReply();
 
     try {
       const res = await fetch(
-        `https://ddg-api.herokuapp.com/search?query=${encodeURIComponent(query)}`,
+        `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`,
       );
       const data = await res.json();
 
-      if (!data || !data.results || data.results.length === 0) {
-        return interaction.editReply("No results found.");
+      const results = [];
+
+      if (data.AbstractURL && data.AbstractText) {
+        results.push(
+          `**[${data.Heading}](${data.AbstractURL})**\n${data.AbstractText}`,
+        );
+      }
+
+      if (data.RelatedTopics && data.RelatedTopics.length > 0) {
+        for (const topic of data.RelatedTopics) {
+          if (topic.Text && topic.FirstURL && results.length < 10) {
+            results.push(`**[${topic.Text}](${topic.FirstURL})**`);
+          }
+        }
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`🔍 Results for "${query}"`)
-        .setColor("Blue")
+        .setTitle("🔍 MyWeb Search Results")
         .setDescription(
-          data.results
-            .slice(0, 10)
-            .map((r, i) => `**${i + 1}. [${r.title}](${r.href})**\n${r.body}`)
-            .join("\n\n"),
-        );
+          results.slice(0, 10).join("\n\n") || "No results found.",
+        )
+        .setColor("Green");
 
       await interaction.editReply({ embeds: [embed] });
-    } catch (err) {
-      console.error("Search error:", err);
-      interaction.editReply("Something went wrong while searching.");
+    } catch (error) {
+      console.error("Search Error:", error);
+      await interaction.editReply("❌ Search failed. Please try again later.");
     }
   }
 
+  // Slash command: /snake
   if (commandName === "snake") {
     const game = new SnakeGame(interaction);
     game.start();
@@ -82,34 +90,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.login(process.env.DISCORD_TOKEN);
 
-// ======================= SLASH COMMAND DEPLOY =========================
-const commands = [
-  new SlashCommandBuilder()
-    .setName("search")
-    .setDescription("Search the web using DuckDuckGo.")
-    .addStringOption((option) =>
-      option.setName("query").setDescription("Search query").setRequired(true),
-    ),
-  new SlashCommandBuilder()
-    .setName("snake")
-    .setDescription("Play a simple button-based Snake game."),
-].map((cmd) => cmd.toJSON());
-
-const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-
-(async () => {
-  try {
-    console.log("🚀 Deploying slash commands globally...");
-    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), {
-      body: commands,
-    });
-    console.log("✅ Slash commands deployed!");
-  } catch (error) {
-    console.error("❌ Deployment error:", error);
-  }
-})();
-
-// ====================== SNAKE GAME ===========================
+// Inline Snake Game Class
 class SnakeGame {
   constructor(interaction) {
     this.interaction = interaction;
@@ -168,7 +149,6 @@ class SnakeGame {
       if (i.user.id !== this.interaction.user.id) {
         return i.reply({ content: "This isn't your game!", ephemeral: true });
       }
-
       const choice = i.customId;
       if (["up", "down", "left", "right"].includes(choice)) {
         this.direction = choice;
@@ -177,9 +157,7 @@ class SnakeGame {
     });
 
     collector.on("end", () => {
-      if (this.alive) {
-        this.stop("⏹️ Game ended due to inactivity.");
-      }
+      if (this.alive) this.stop("⏹️ Game ended due to inactivity.");
     });
   }
 
@@ -187,9 +165,7 @@ class SnakeGame {
     let board = Array.from({ length: this.boardSize }, () =>
       Array(this.boardSize).fill("⬛"),
     );
-    this.snake.forEach(([x, y]) => {
-      board[y][x] = "🟩";
-    });
+    this.snake.forEach(([x, y]) => (board[y][x] = "🟩"));
     const [ax, ay] = this.apple;
     board[ay][ax] = "🍎";
     return board.map((row) => row.join("")).join("\n");
@@ -259,12 +235,10 @@ class SnakeGame {
   stop(reason) {
     this.alive = false;
     clearInterval(this.interval);
-
     const embed = new EmbedBuilder()
       .setTitle("🐍 Snake Game Over")
       .setDescription(reason)
       .setColor("Red");
-
     this.message.edit({ embeds: [embed], components: [] });
   }
 }
